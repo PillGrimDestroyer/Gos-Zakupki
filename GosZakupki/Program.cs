@@ -1,9 +1,8 @@
-﻿using HtmlAgilityPack;
+﻿using GosZakupki.Data_Base;
+using GosZakupki.Model;
+using GosZakupki.Parser;
+using GosZakupki.Support;
 using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.Http;
 using System.Threading;
 
 namespace GosZakupki
@@ -11,169 +10,86 @@ namespace GosZakupki
     class Program
     {
         private const int THREAD_COUNT = 1;
-        private static int LAST_PAGE = 999;
-        private const string URL = @"https://www.goszakup.gov.kz/ru/search/lots?filter[method][0]=3&filter[method][1]=2&filter[method][2]=7&filter[method][3]=6&filter[method][4]=50&filter[method][5]=52&filter[method][6]=22&count_record=50&page=";
-        private static ArrayList PASSED_PAGE_LIST = new ArrayList();
 
         static void Main(string[] args)
         {
+            #if DEBUG
+                Log.STANDART_TYPE = Log.Type.CONSOLE;
+            #else
+                Log.STANDART_TYPE = Log.Type.BOTH;
+            #endif
+
+            FileOperation.createMyFoldersAndFiles();
+
+            try
+            {
+                DBWork.createNotExistTables();
+
+                parseCompany();
+                //parseAdvertAndLot();
+            }
+            catch (Exception ex)
+            {
+                Log.E(ex.Message);
+            }
+            finally
+            {
+                Console.WriteLine();
+                Console.Write("Done");
+                Console.ReadKey();
+            }
+        }
+
+        /// <summary>
+        /// Запуск парсинга по всем компаниям
+        /// </summary>
+        static void parseCompany()
+        {
+            SearchPage.LAST_PAGE = 999;
+            SearchPage.PASSED_PAGE_LIST.Clear();
+
             Thread[] threads = new Thread[THREAD_COUNT];
             ManualResetEvent[] handles = new ManualResetEvent[THREAD_COUNT];
 
             for (int i = 0; i < THREAD_COUNT; i++)
             {
+                var searchLotPageParser = new SearchCompanyPageParser(i + 1);
+
                 handles[i] = new ManualResetEvent(false);
-                threads[i] = new Thread(new ParameterizedThreadStart(threadJob));
+                threads[i] = new Thread(new ParameterizedThreadStart(searchLotPageParser.start));
                 threads[i].IsBackground = true;
-                threads[i].Start(new object[] { handles[i], i + 1 });
+                threads[i].Start(handles[i]);
+
+                Tools._pause(1000, 5000);
             }
 
             WaitHandle.WaitAll(handles);
-
-            Console.WriteLine();
-            Console.Write("Done");
-            Console.ReadKey();
         }
 
-        private static void threadJob(object objData)
+        /// <summary>
+        /// Запуск парсинга по всем объявлениям и их лотов
+        /// </summary>
+        static void parseAdvertAndLot()
         {
-            object[] objMass = objData as object[];
-            ManualResetEvent handle = objMass[0] as ManualResetEvent;
-            int page = (int) objMass[1];
-            int nextPage = page + 1;
+            SearchPage.LAST_PAGE = 999;
+            SearchPage.PASSED_PAGE_LIST.Clear();
 
-            try
+            Thread[] threads = new Thread[THREAD_COUNT];
+            ManualResetEvent[] handles = new ManualResetEvent[THREAD_COUNT];
+
+            for (int i = 0; i < THREAD_COUNT; i++)
             {
-                while (nextPage <= LAST_PAGE)
-                {
-                    parsePage(page);
+                var searchLotPageParser = new SearchLotPageParser(i + 1);
 
-                    page = nextPage;
-                    nextPage++;
+                handles[i] = new ManualResetEvent(false);
+                threads[i] = new Thread(new ParameterizedThreadStart(searchLotPageParser.start));
+                threads[i].IsBackground = true;
+                threads[i].Start(handles[i]);
 
-                    //todo: Проблема с частыми запросами. Надо найти хорошее решение
-                    //Слишком частые запросы приводят к тому, что сайт требует ввести капчу
-                    //Сделал временное решение, в виде обычной паузы, но при многопоточности это не работает
-                    Tools._pause(new Random(DateTime.Now.Millisecond).Next(1, 5) * 1000);
-                }
-            }
-            catch (Exception ex)
-            {
-                //todo: Убрать
-                Console.WriteLine(ex.Message);
-            }
-            finally
-            {
-                Console.WriteLine("Thread Job Done");
-                handle.Set();
-            }
-        }
-
-        private static void parsePage(int page)
-        {
-            HttpClient client;
-            HtmlDocument document = new HtmlDocument();
-            string body = default(string);
-            bool hasNavigationMenu;
-
-            using (client = getNewHttpClient())
-            {
-                body = client.GetStringAsync(URL + page).Result;
+                Tools._pause(1000, 5000);
             }
 
-            if (string.IsNullOrWhiteSpace(body))
-            {
-                throw new Exception("Empty body");
-            }
-
-            document.LoadHtml(body);
-            hasNavigationMenu = checkNavigationMenu(document);
-
-            if (hasNavigationMenu)
-            {
-                if (PASSED_PAGE_LIST.Contains(page))
-                {
-                    return;
-                }
-
-                PASSED_PAGE_LIST.Add(page);
-
-                updateLastPagePosition(document);
-                //todo: Убрать
-                Console.WriteLine($"Current Page = {page} Next Page = {page + 1} Last Page = {LAST_PAGE}");
-
-
-                List<string> links = default(List<string>);
-                HtmlNodeCollection nodes = document.DocumentNode.SelectNodes("//table[@id='search-result']//*//td//a[@href]");
-                if (nodes != null)
-                {
-                    links = nodes
-                        .Select(a => a.GetAttributeValue("href", String.Empty))
-                        .Where(link => !string.IsNullOrWhiteSpace(link) && link != "javascript:void(0)")
-                        .ToList();
-                }
-
-                links.ForEach(Console.WriteLine);
-            }
-            else
-            {
-                throw new Exception("No navigation menu");
-            }
-        }
-
-        private static bool checkNavigationMenu(HtmlDocument document)
-        {
-            List<string> links = default(List<string>);
-            HtmlNodeCollection nodes = document.DocumentNode.SelectNodes("//a[@href]");
-
-            if (nodes != null) {
-                links = nodes    
-                    .Select(a => a.GetAttributeValue("href", String.Empty))
-                    .Where(link => !string.IsNullOrWhiteSpace(link) && link.Contains("page=") && !link.EndsWith("page=0"))
-                    .ToList();
-            }
-
-            if (links != null)
-            {
-                return links.Count > 0;
-            }
-
-            return false;
-        }
-
-        private static void updateLastPagePosition(HtmlDocument document)
-        {
-            IEnumerable<string> lastPageLink = null;
-            HtmlNodeCollection nodes = document.DocumentNode.SelectNodes("//a[@href]");
-
-            if (nodes != null)
-            {
-                lastPageLink = nodes
-                    .Select(a => a.GetAttributeValue("href", String.Empty))
-                    .Where(link => !string.IsNullOrWhiteSpace(link) && link.Contains("page=") && !link.EndsWith("page=0"));
-            }
-
-            if (lastPageLink != null)
-            {
-                string link = lastPageLink.Last();
-                LAST_PAGE = int.Parse(link.Substring(link.LastIndexOf("page=") + "page=".Length));
-            }
-        }
-
-        private static HttpClient getNewHttpClient()
-        {
-            HttpClient client;
-            HttpClientHandler handler;
-
-            handler = new HttpClientHandler
-            {
-                ClientCertificateOptions = ClientCertificateOption.Manual,
-                ServerCertificateCustomValidationCallback = (httpRequestMessage, cert, cetChain, policyErrors) => { return true; }
-            };
-
-            client = new HttpClient(new RetryHandler(handler));
-
-            return client;
+            WaitHandle.WaitAll(handles);
         }
     }
 }

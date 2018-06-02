@@ -2,7 +2,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace GosZakupki
+namespace GosZakupki.Support
 {
     public class RetryHandler : DelegatingHandler
     {
